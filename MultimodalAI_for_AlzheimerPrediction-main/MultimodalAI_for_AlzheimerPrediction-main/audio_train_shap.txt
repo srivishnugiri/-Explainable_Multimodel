@@ -1,0 +1,103 @@
+import os
+import librosa
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv1D, LSTM, Dense, Dropout
+import shap
+import joblib
+import tensorflow as tf
+
+# -----------------------------
+# Feature Extraction Function
+# -----------------------------
+def extract_features(file_path, max_pad_length=100):
+    try:
+        signal, sr = librosa.load(file_path, sr=22050)
+        mfccs = librosa.feature.mfcc(y=signal, sr=sr, n_mfcc=40)
+        pad_width = max_pad_length - mfccs.shape[1]
+        if pad_width > 0:
+            mfccs = np.pad(mfccs, pad_width=((0, 0), (0, pad_width)), mode='constant')
+        else:
+            mfccs = mfccs[:, :max_pad_length]
+        return mfccs.T  # Shape (100, 40)
+    except Exception as e:
+        print(f"Error processing {file_path}: {e}")
+        return None
+
+# -----------------------------
+# Dataset Loading
+# -----------------------------
+dataset_path = "D:/SEP-2025/Alzheimer/Dataset/Audio/"
+classes = ["Alzheimer", "Healthy"]
+
+data, labels = [], []
+
+for class_label in classes:
+    class_path = os.path.join(dataset_path, class_label)
+    for file in os.listdir(class_path):
+        if file.endswith(".wav"):
+            feature = extract_features(os.path.join(class_path, file))
+            if feature is not None:
+                data.append(feature)
+                labels.append(class_label)
+
+X = np.array(data)
+y = np.array(labels)
+
+# Encode labels
+encoder = LabelEncoder()
+y_encoded = encoder.fit_transform(y)
+joblib.dump(encoder, "label_encoder.pkl")
+
+# Split
+X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
+
+# Reshape for Conv1D input
+X_train = np.expand_dims(X_train, axis=-1)
+X_test = np.expand_dims(X_test, axis=-1)
+
+# -----------------------------
+# Model Definition
+# -----------------------------
+def build_convlstm():
+    model = Sequential([
+        Conv1D(64, 3, activation='relu', input_shape=(100, 40, 1)),
+        tf.keras.layers.Reshape((100, 40)),
+        LSTM(64, return_sequences=True),
+        LSTM(32),
+        Dense(32, activation='relu'),
+        Dropout(0.3),
+        Dense(len(classes), activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+convlstm_model = build_convlstm()
+history_convlstm = convlstm_model.fit(
+    X_train, y_train,
+    epochs=20,
+    batch_size=16,
+    validation_data=(X_test, y_test)
+)
+
+# Save model
+convlstm_model.save("Alzheimer_Audio_ConvLSTM.h5")
+
+# -----------------------------
+# SHAP Explainability
+# -----------------------------
+background = X_train[np.random.choice(X_train.shape[0], 50, replace=False)]  # sample background
+explainer = shap.DeepExplainer(convlstm_model, background)
+joblib.dump(background, "shap_background.pkl")
+
+# Example SHAP explanation on one test sample
+sample = X_test[0:1]
+shap_values = explainer.shap_values(sample)
+
+# Visualize SHAP
+plt.figure(figsize=(10, 5))
+shap.image_plot(shap_values, sample)
+plt.show()
