@@ -1,2 +1,2 @@
-# -AI_Medical_Chatbot
+# Explainable Multimodal AI for Alzheimer’s Diagnosis
 AI in healthcare End-to-End Project
